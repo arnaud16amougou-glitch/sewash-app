@@ -1,3 +1,8 @@
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+package-lock.json
+
 # Ignorer les dépendances (binaires)
 node_modules/
 backend/node_modules/
