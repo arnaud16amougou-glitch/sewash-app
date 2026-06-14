@@ -8,13 +8,14 @@ function Login() {
   const [password, setPassword] = useState('');
   const { login } = useContext(AuthContext);
   const navigate = useNavigate();
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5002/api';
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      const res = await axios.post('http://localhost:5000/api/login', { username, password });
+      const res = await axios.post(`${API_URL}/login`, { username, password });
       login(res.data.token, res.data.role);
-      navigate('/map');
+      navigate('/dashboard');
     } catch (err) {
       alert('Nom d’utilisateur ou mot de passe incorrect');
     }
