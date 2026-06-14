@@ -1,0 +1,30 @@
+# Ignorer les dépendances (évite de pousser des binaires incompatibles)
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Ignorer les fichiers de verrouillage (si vous ne voulez pas les versionner)
+# yarn.lock
+
+# Ignorer les fichiers d'environnement (secrets)
+.env
+.env.local
+.env.production
+
+# Ignorer les dossiers de build
+dist/
+build/
+backend/dist/
+frontend/dist/
+
+# Ignorer les logs
+*.log
+npm-debug.log*
+
+# Ignorer les fichiers système
+.DS_Store
+Thumbs.db
+
+# Ignorer les dossiers d'IDE
+.vscode/
+.idea/
