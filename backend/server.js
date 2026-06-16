@@ -28,14 +28,10 @@ const storage = multer.diskStorage({
 const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
 app.use('/uploads', express.static(uploadDir));
 
-// Connexion PostgreSQL
+// Connexion PostgreSQL avec DATABASE_URL (obligatoire sur Render)
 const pool = new Pool({
-  user: process.env.DB_USER,
-  host: process.env.DB_HOST,
-  database: process.env.DB_NAME,
-  password: process.env.DB_PASSWORD,
-  port: process.env.DB_PORT,
-  client_encoding: 'UTF8'
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
 });
 
 // Middleware auth standard
@@ -77,144 +73,16 @@ app.post('/api/login', async (req, res) => {
     const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '8h' });
     res.json({ token, role: user.role });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
 // ==================== ROUTES RÉGIONS ET COMMUNES ====================
-// Récupérer les régions (existe normalement déjà)
 app.get('/api/regions', async (req, res) => {
   try {
     const result = await pool.query('SELECT id, name, code FROM regions ORDER BY name');
     res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Export PDF avec filtre région
-app.get('/api/export/pdf', async (req, res) => {
-  const { region } = req.query;
-  let whereClause = '';
-  let params = [];
-  if (region) {
-    whereClause = ' WHERE r.code = $1';
-    params.push(region);
-  }
-  const query = `
-    SELECT c.complaint_code, c.complaint_type, c.status, c.description, c.created_at,
-           com.name as commune_name, r.name as region_name
-    FROM complaints c
-    JOIN communes com ON c.commune_id = com.id
-    JOIN regions r ON com.region_id = r.id
-    ${whereClause}
-    ORDER BY c.created_at DESC
-  `;
-  try {
-    const result = await pool.query(query, params);
-    const complaints = result.rows;
-    const doc = new PDFDocument();
-    res.setHeader('Content-Disposition', 'attachment; filename=plaintes.pdf');
-    res.setHeader('Content-Type', 'application/pdf');
-    doc.pipe(res);
-    doc.fontSize(18).text('Liste des plaintes SEWASH', { align: 'center' });
-    if (region) {
-      const regionName = await pool.query('SELECT name FROM regions WHERE code = $1', [region]);
-      doc.fontSize(12).text(`Région : ${regionName.rows[0]?.name || region}`, { align: 'center' });
-    }
-    doc.moveDown();
-    complaints.forEach(c => {
-      doc.fontSize(12).text(`N° ${c.complaint_code} - ${c.complaint_type} - ${c.status}`);
-      doc.text(`Région: ${c.region_name} | Commune: ${c.commune_name}`);
-      doc.text(`Description: ${(c.description || '').substring(0, 100)}...`);
-      doc.text(`Date: ${new Date(c.created_at).toLocaleString()}`);
-      doc.moveDown();
-    });
-    doc.end();
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Export Excel avec filtre région
-app.get('/api/export/excel', async (req, res) => {
-  const { region } = req.query;
-  let whereClause = '';
-  let params = [];
-  if (region) {
-    whereClause = ' WHERE r.code = $1';
-    params.push(region);
-  }
-  const query = `
-    SELECT c.complaint_code, c.complaint_type, c.status, c.description, c.created_at,
-           com.name as commune_name, r.name as region_name
-    FROM complaints c
-    JOIN communes com ON c.commune_id = com.id
-    JOIN regions r ON com.region_id = r.id
-    ${whereClause}
-    ORDER BY c.created_at DESC
-  `;
-  try {
-    const result = await pool.query(query, params);
-    const complaints = result.rows;
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('Plaintes');
-    worksheet.columns = [
-      { header: 'Code', key: 'code', width: 15 },
-      { header: 'Région', key: 'region', width: 15 },
-      { header: 'Commune', key: 'commune', width: 20 },
-      { header: 'Type', key: 'type', width: 15 },
-      { header: 'Statut', key: 'status', width: 10 },
-      { header: 'Description', key: 'desc', width: 50 },
-      { header: 'Date', key: 'date', width: 20 }
-    ];
-    complaints.forEach(c => {
-      worksheet.addRow({
-        code: c.complaint_code,
-        region: c.region_name,
-        commune: c.commune_name,
-        type: c.complaint_type,
-        status: c.status,
-        desc: c.description,
-        date: c.created_at
-      });
-    });
-    res.setHeader('Content-Disposition', 'attachment; filename=plaintes.xlsx');
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    await workbook.xlsx.write(res);
-    res.end();
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/dashboard', async (req, res) => {
-  const { region } = req.query;
-  let whereClause = '';
-  let params = [];
-  if (region) {
-    whereClause = ` WHERE r.code = $1`;
-    params.push(region);
-  }
-  // On utilise des sous‑requêtes avec les clés étrangères (commune.region_id)
-  const queries = {
-    totalComplaints: `SELECT COUNT(*) FROM complaints c JOIN communes com ON c.commune_id = com.id JOIN regions r ON com.region_id = r.id ${whereClause}`,
-    resolvedComplaints: `SELECT COUNT(*) FROM complaints c JOIN communes com ON c.commune_id = com.id JOIN regions r ON com.region_id = r.id ${whereClause} AND c.status = 'resolue'`,
-    totalPaps: `SELECT COUNT(*) FROM pap p JOIN communes com ON p.commune_id = com.id JOIN regions r ON com.region_id = r.id ${whereClause}`,
-    indemnifiedPaps: `SELECT COUNT(*) FROM pap p JOIN communes com ON p.commune_id = com.id JOIN regions r ON com.region_id = r.id ${whereClause} AND p.status = 'indemnified'`,
-    totalBornes: `SELECT COUNT(*) FROM bornes b JOIN communes com ON b.commune_id = com.id JOIN regions r ON com.region_id = r.id ${whereClause}`,
-    activeBornes: `SELECT COUNT(*) FROM bornes b JOIN communes com ON b.commune_id = com.id JOIN regions r ON com.region_id = r.id ${whereClause} AND b.status = 'active'`
-  };
-  try {
-    const stats = {};
-    for (const [key, query] of Object.entries(queries)) {
-      const result = await pool.query(query, params);
-      stats[key] = parseInt(result.rows[0].count);
-    }
-    stats.resolutionRate = stats.totalComplaints ? Math.round((stats.resolvedComplaints / stats.totalComplaints) * 100) : 0;
-    res.json(stats);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -242,7 +110,8 @@ app.get('/api/communes', async (req, res) => {
   }
 });
 
-// Route bornes avec filtre région
+// ==================== ROUTES BORNES ====================
+// Route bornes avec filtre région (version complète avec jointures)
 app.get('/api/bornes', async (req, res) => {
   const { region } = req.query;
   let query = `
@@ -257,36 +126,15 @@ app.get('/api/bornes', async (req, res) => {
   if (region) {
     query += ` WHERE r.code = '${region}'`;
   }
-  const result = await pool.query(query);
-  res.json(result.rows);
-});
-app.get('/api/communes', async (req, res) => {
-  const { region } = req.query;
-  let query = 'SELECT id, name, city, arrondissement, ST_X(geom) as lng, ST_Y(geom) as lat FROM communes';
-  const params = [];
-  if (region) {
-    query += ' WHERE city = $1';
-    params.push(region);
-  }
-  query += ' ORDER BY name';
   try {
-    const result = await pool.query(query, params);
+    const result = await pool.query(query);
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ==================== ROUTES BORNES ====================
-app.get('/api/bornes', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT id, code, commune_id, ST_X(geom) as lng, ST_Y(geom) as lat, status FROM bornes');
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
+// QR code pour une borne
 app.get('/api/bornes/:code/qrcode', async (req, res) => {
   const { code } = req.params;
   try {
@@ -304,6 +152,7 @@ app.get('/api/bornes/:code/qrcode', async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': imgBuffer.length });
     res.end(imgBuffer);
   } catch (err) {
+    console.error(err);
     res.status(500).send('Erreur serveur');
   }
 });
@@ -416,72 +265,129 @@ app.post('/api/biens/:id/photo', upload.single('photo'), async (req, res) => {
   res.json({ success: true, url: fileUrl });
 });
 
-// ==================== TABLEAU DE BORD ====================
+// ==================== TABLEAU DE BORD (avec filtre région) ====================
 app.get('/api/dashboard', async (req, res) => {
+  const { region } = req.query;
+  let whereClause = '';
+  let params = [];
+  if (region) {
+    whereClause = ` WHERE r.code = $1`;
+    params.push(region);
+  }
+  const queries = {
+    totalComplaints: `SELECT COUNT(*) FROM complaints c JOIN communes com ON c.commune_id = com.id JOIN regions r ON com.region_id = r.id ${whereClause}`,
+    resolvedComplaints: `SELECT COUNT(*) FROM complaints c JOIN communes com ON c.commune_id = com.id JOIN regions r ON com.region_id = r.id ${whereClause} AND c.status = 'resolue'`,
+    totalPaps: `SELECT COUNT(*) FROM pap p JOIN communes com ON p.commune_id = com.id JOIN regions r ON com.region_id = r.id ${whereClause}`,
+    indemnifiedPaps: `SELECT COUNT(*) FROM pap p JOIN communes com ON p.commune_id = com.id JOIN regions r ON com.region_id = r.id ${whereClause} AND p.status = 'indemnified'`,
+    totalBornes: `SELECT COUNT(*) FROM bornes b JOIN communes com ON b.commune_id = com.id JOIN regions r ON com.region_id = r.id ${whereClause}`,
+    activeBornes: `SELECT COUNT(*) FROM bornes b JOIN communes com ON b.commune_id = com.id JOIN regions r ON com.region_id = r.id ${whereClause} AND b.status = 'active'`
+  };
   try {
-    const totalComplaints = await pool.query('SELECT COUNT(*) FROM complaints');
-    const resolvedComplaints = await pool.query("SELECT COUNT(*) FROM complaints WHERE status = 'resolue'");
-    const totalPaps = await pool.query('SELECT COUNT(*) FROM pap');
-    const indemnifiedPaps = await pool.query("SELECT COUNT(*) FROM pap WHERE status = 'indemnified'");
-    const totalBornes = await pool.query('SELECT COUNT(*) FROM bornes');
-    const activeBornes = await pool.query("SELECT COUNT(*) FROM bornes WHERE status = 'active'");
-    res.json({
-      totalComplaints: parseInt(totalComplaints.rows[0].count),
-      resolutionRate: totalComplaints.rows[0].count ? Math.round((resolvedComplaints.rows[0].count / totalComplaints.rows[0].count) * 100) : 0,
-      totalPaps: parseInt(totalPaps.rows[0].count),
-      indemnifiedPaps: parseInt(indemnifiedPaps.rows[0].count),
-      totalBornes: parseInt(totalBornes.rows[0].count),
-      activeBornes: parseInt(activeBornes.rows[0].count)
-    });
+    const stats = {};
+    for (const [key, query] of Object.entries(queries)) {
+      const result = await pool.query(query, params);
+      stats[key] = parseInt(result.rows[0].count);
+    }
+    stats.resolutionRate = stats.totalComplaints ? Math.round((stats.resolvedComplaints / stats.totalComplaints) * 100) : 0;
+    res.json(stats);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ==================== EXPORTS ====================
+// ==================== EXPORTS PDF / EXCEL (avec filtre région) ====================
 app.get('/api/export/pdf', async (req, res) => {
+  const { region } = req.query;
+  let whereClause = '';
+  let params = [];
+  if (region) {
+    whereClause = ' WHERE r.code = $1';
+    params.push(region);
+  }
+  const query = `
+    SELECT c.complaint_code, c.complaint_type, c.status, c.description, c.created_at,
+           com.name as commune_name, r.name as region_name
+    FROM complaints c
+    JOIN communes com ON c.commune_id = com.id
+    JOIN regions r ON com.region_id = r.id
+    ${whereClause}
+    ORDER BY c.created_at DESC
+  `;
   try {
-    const result = await pool.query('SELECT * FROM complaints ORDER BY created_at DESC');
+    const result = await pool.query(query, params);
     const complaints = result.rows;
     const doc = new PDFDocument();
     res.setHeader('Content-Disposition', 'attachment; filename=plaintes.pdf');
     res.setHeader('Content-Type', 'application/pdf');
     doc.pipe(res);
     doc.fontSize(18).text('Liste des plaintes SEWASH', { align: 'center' });
+    if (region) {
+      const regionName = await pool.query('SELECT name FROM regions WHERE code = $1', [region]);
+      doc.fontSize(12).text(`Région : ${regionName.rows[0]?.name || region}`, { align: 'center' });
+    }
     doc.moveDown();
     complaints.forEach(c => {
       doc.fontSize(12).text(`N° ${c.complaint_code} - ${c.complaint_type} - ${c.status}`);
-      doc.text(`Description: ${(c.description || '').substring(0, 80)}...`);
+      doc.text(`Région: ${c.region_name} | Commune: ${c.commune_name}`);
+      doc.text(`Description: ${(c.description || '').substring(0, 100)}...`);
       doc.text(`Date: ${new Date(c.created_at).toLocaleString()}`);
       doc.moveDown();
     });
     doc.end();
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
 app.get('/api/export/excel', async (req, res) => {
+  const { region } = req.query;
+  let whereClause = '';
+  let params = [];
+  if (region) {
+    whereClause = ' WHERE r.code = $1';
+    params.push(region);
+  }
+  const query = `
+    SELECT c.complaint_code, c.complaint_type, c.status, c.description, c.created_at,
+           com.name as commune_name, r.name as region_name
+    FROM complaints c
+    JOIN communes com ON c.commune_id = com.id
+    JOIN regions r ON com.region_id = r.id
+    ${whereClause}
+    ORDER BY c.created_at DESC
+  `;
   try {
-    const result = await pool.query('SELECT * FROM complaints ORDER BY created_at DESC');
+    const result = await pool.query(query, params);
     const complaints = result.rows;
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Plaintes');
     worksheet.columns = [
       { header: 'Code', key: 'code', width: 15 },
+      { header: 'Région', key: 'region', width: 15 },
+      { header: 'Commune', key: 'commune', width: 20 },
       { header: 'Type', key: 'type', width: 15 },
       { header: 'Statut', key: 'status', width: 10 },
-      { header: 'Description', key: 'desc', width: 40 },
-      { header: 'Date', key: 'date', width: 20 },
+      { header: 'Description', key: 'desc', width: 50 },
+      { header: 'Date', key: 'date', width: 20 }
     ];
     complaints.forEach(c => {
-      worksheet.addRow({ code: c.complaint_code, type: c.complaint_type, status: c.status, desc: c.description, date: c.created_at });
+      worksheet.addRow({
+        code: c.complaint_code,
+        region: c.region_name,
+        commune: c.commune_name,
+        type: c.complaint_type,
+        status: c.status,
+        desc: c.description,
+        date: c.created_at
+      });
     });
     res.setHeader('Content-Disposition', 'attachment; filename=plaintes.xlsx');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     await workbook.xlsx.write(res);
     res.end();
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
